@@ -324,6 +324,7 @@ local ERRORS = {
 	disabled = "The beast box is turned off on this realm.",
 	unknown = "The server didn't understand that. Update the addon?",
 	notready = "The server is still starting up.",
+	busy = "Asking the server again in a moment...",
 }
 
 function BC.ErrorText(reason)
@@ -523,6 +524,7 @@ handlers.ERR = function (args)
 	local command = parts[1]
 	local reason = table.concat(parts, ":", 2)
 	BC.Fire("ERR", command, reason)
+	if reason == "busy" then BC.RetryBusy(command) end
 	if command == "CALL" or command == "STORE" or command == "FREE" then
 		UIErrorsFrame:AddMessage(BC.ErrorText(reason), 1, 0.1, 0.1)
 	end
@@ -562,11 +564,13 @@ function BC.Release(pet)
 end
 
 local mapAsked, zoneAsked = {}, {}
+local lastMap, lastZone
 
 -- A look's spawn map; MAP fires when it's there.
 function BC.RequestMap(display)
 	if BC.maps[display] or mapAsked[display] or not BC.server or BC.server.mismatch or BC.server.off then return end
 	mapAsked[display] = true
+	lastMap = display
 	BC.Send("MAP:" .. display)
 end
 
@@ -575,7 +579,24 @@ function BC.RequestZone(name)
 	local key = string.lower(name or "")
 	if key == "" or BC.zonePins[key] or zoneAsked[key] or not BC.server or BC.server.mismatch or BC.server.off then return end
 	zoneAsked[key] = true
+	lastZone = name
 	BC.Send("ZONE:" .. name)
+end
+
+-- The server rations requests per character and answered "busy": ask again once it has had a
+-- moment. MAP and ZONE go out one at a time as the player looks, so "busy" is about the last one.
+function BC.RetryBusy(command)
+	if command == "MAP" and lastMap then
+		local display = lastMap
+		mapAsked[display] = nil
+		BC.After(1, function () BC.RequestMap(display) end)
+	elseif command == "ZONE" and lastZone then
+		local name = lastZone
+		zoneAsked[string.lower(name)] = nil
+		BC.After(1, function () BC.RequestZone(name) end)
+	elseif command == "DEX" or command == "PETS" or (command == "CAT" and not BC.catalogReady) then
+		BC.After(1, function () BC.Send(command) end)
+	end
 end
 
 -----------------------------------------
@@ -630,17 +651,24 @@ function BC.Toggle()
 	if BC.frame:IsShown() then BC.frame:Hide() else BC.frame:Show() end
 end
 
--- Opens the window on the Field Guide tab, at a look if one is given.
+-- Opens the Field Guide, at a look if one is given: the Journal's Beasts tab when the Journal
+-- is installed, this window's Field Guide tab otherwise.
 function BC.ShowLook(display)
-	if not BC.frame then return end
-	BC.frame:Show()
-	if BC.dexTab then BC.SelectTab(BC.dexTab) end
+	if BC.InJournal and BC.InJournal() then
+		if BC.frame and BC.frame:IsShown() then BC.frame:Hide() end
+		Journal.OpenTab("beasts")
+	else
+		if not BC.frame then return end
+		BC.frame:Show()
+		if BC.dexTab then BC.SelectTab(BC.dexTab) end
+	end
 	if display then BC.Fire("SHOW_LOOK", display) end
 end
 
 SLASH_BEASTCOLLECTION1 = "/beasts"
 SLASH_BEASTCOLLECTION2 = "/beastcollection"
-SLASH_BEASTCOLLECTION3 = "/fieldguide"
+SLASH_BEASTFIELDGUIDE1 = "/fieldguide"
+SlashCmdList["BEASTFIELDGUIDE"] = function () BC.ShowLook() end
 SlashCmdList["BEASTCOLLECTION"] = function (msg)
 	msg = string.lower(msg or "")
 	if msg == "guide" or msg == "dex" then
